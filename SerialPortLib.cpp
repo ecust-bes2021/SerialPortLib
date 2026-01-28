@@ -42,19 +42,14 @@ static int set_serial_attributes_internal(ACE_HANDLE handle, unsigned long baudR
     dcbSerialParams.ByteSize = 8;
     dcbSerialParams.StopBits = ONESTOPBIT;
     dcbSerialParams.Parity = NOPARITY;
-    // --- Flow Control (IMPORTANT - Enable if needed!) ---
-    // dcbSerialParams.fOutxCtsFlow = FALSE; // Disable CTS output flow control
-    // dcbSerialParams.fRtsControl = RTS_CONTROL_DISABLE; // Disable RTS
-    // dcbSerialParams.fOutxDsrFlow = FALSE;
-    // dcbSerialParams.fDtrControl = DTR_CONTROL_DISABLE;
-    // To Enable RTS/CTS:
-    dcbSerialParams.fOutxCtsFlow = TRUE;
-    dcbSerialParams.fRtsControl = RTS_CONTROL_ENABLE;
-    dcbSerialParams.fOutxDsrFlow = TRUE;
-    dcbSerialParams.fDtrControl = DTR_CONTROL_ENABLE;
-    
-    dcbSerialParams.fOutX = FALSE;
-    dcbSerialParams.fInX = FALSE;
+    // --- Flow Control (Disabled to match SecureCRT behavior) ---
+    dcbSerialParams.fOutxCtsFlow = FALSE;  // No CTS hardware flow control
+    dcbSerialParams.fRtsControl = RTS_CONTROL_ENABLE;  // Raise RTS on open, keep high
+    dcbSerialParams.fOutxDsrFlow = FALSE;  // No DSR hardware flow control
+    dcbSerialParams.fDtrControl = DTR_CONTROL_ENABLE;  // Raise DTR on open, keep high
+
+    dcbSerialParams.fOutX = TRUE;
+    dcbSerialParams.fInX = TRUE;
     dcbSerialParams.fBinary = TRUE; // MUST be true for binary data
     dcbSerialParams.fAbortOnError = FALSE; // Don't abort reads/writes on error
 
@@ -77,8 +72,10 @@ static int set_serial_attributes_internal(ACE_HANDLE handle, unsigned long baudR
         if (g_errorCallback) g_errorCallback(g_userData, GetLastError(), "SetCommTimeouts failed");
         return -1;
     }
-    EscapeCommFunction(handle, SETDTR);  // Force DTR high
-	EscapeCommFunction(handle, SETRTS);  // Force RTS high
+
+    // Explicitly set DTR/RTS high (belt and suspenders with DTR_CONTROL_ENABLE)
+    EscapeCommFunction(handle, SETDTR);
+    EscapeCommFunction(handle, SETRTS);
     return 0;
 }
 
