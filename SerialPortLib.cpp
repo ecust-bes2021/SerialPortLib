@@ -16,6 +16,7 @@
 
 #include <string>
 #include <atomic> // Use C++11 atomic for thread safety flag
+#include <cstdio> // For snprintf
 
 // --- Internal State ---
 static ACE_HANDLE g_serialHandle = ACE_INVALID_HANDLE;
@@ -26,6 +27,8 @@ static SerialErrorCallback g_errorCallback = nullptr;
 static void* g_userData = nullptr;
 
 const size_t READ_BUFFER_SIZE = 4096; // Internal read buffer size
+const DWORD STATUS_LOG_INTERVAL_MS = 3000; // Low-frequency status log interval
+const DWORD SILENCE_THRESHOLD_MS = 1500;   // Only log when no data for this long
 
 // --- Internal Helper Functions ---
 
@@ -87,6 +90,23 @@ static unsigned __stdcall ReadThreadFunc(void* param) {
     ACE_UNUSED_ARG(param);
     char read_buffer[READ_BUFFER_SIZE];
     ssize_t bytes_read; // Use ssize_t for ACE_OS::read return
+    ULONGLONG last_rx_time = GetTickCount64();
+    ULONGLONG last_status_time = 0;
+
+    struct StatusSnapshot {
+        bool valid = false;
+        DWORD modemStatus = 0;
+        DWORD errors = 0;
+        DWORD cbInQue = 0;
+        DWORD cbOutQue = 0;
+        bool fXoffHold = false;
+        bool fXoffSent = false;
+        BYTE fDtrControl = 0;
+        BYTE fRtsControl = 0;
+        BYTE fOutX = 0;
+        BYTE fInX = 0;
+    };
+    StatusSnapshot last;
 
     ACE_DEBUG((LM_DEBUG, ACE_TEXT("(%t) Read thread started.\n")));
 
@@ -94,6 +114,7 @@ static unsigned __stdcall ReadThreadFunc(void* param) {
         bytes_read = ACE_OS::read(g_serialHandle, read_buffer, READ_BUFFER_SIZE);
 
         if (bytes_read > 0) {
+            last_rx_time = GetTickCount64();
             // Data received, call the callback
             if (g_dataCallback) {
                 try {
@@ -108,6 +129,78 @@ static unsigned __stdcall ReadThreadFunc(void* param) {
         else if (bytes_read == 0) {
             // Timeout occurred (based on COMMTIMEOUTS settings), this is normal
             // Allows us to loop and check g_isRunning without busy-waiting
+            ULONGLONG now = GetTickCount64();
+            if ((now - last_rx_time) >= SILENCE_THRESHOLD_MS &&
+                (now - last_status_time) >= STATUS_LOG_INTERVAL_MS) {
+                last_status_time = now;
+
+                HANDLE h = (HANDLE)g_serialHandle;
+                DWORD modemStatus = 0;
+                DWORD errors = 0;
+                COMSTAT comstat = { 0 };
+                DCB dcb = { 0 };
+                dcb.DCBlength = sizeof(dcb);
+
+                BOOL modem_ok = GetCommModemStatus(h, &modemStatus);
+                BOOL com_ok = ClearCommError(h, &errors, &comstat);
+                BOOL dcb_ok = GetCommState(h, &dcb);
+
+                StatusSnapshot cur;
+                cur.valid = true;
+                cur.modemStatus = modem_ok ? modemStatus : 0;
+                cur.errors = com_ok ? errors : 0;
+                cur.cbInQue = com_ok ? comstat.cbInQue : 0;
+                cur.cbOutQue = com_ok ? comstat.cbOutQue : 0;
+                cur.fXoffHold = com_ok ? (comstat.fXoffHold != 0) : false;
+                cur.fXoffSent = com_ok ? (comstat.fXoffSent != 0) : false;
+                cur.fDtrControl = dcb_ok ? dcb.fDtrControl : 0;
+                cur.fRtsControl = dcb_ok ? dcb.fRtsControl : 0;
+                cur.fOutX = dcb_ok ? dcb.fOutX : 0;
+                cur.fInX = dcb_ok ? dcb.fInX : 0;
+
+                bool changed = !last.valid ||
+                               last.modemStatus != cur.modemStatus ||
+                               last.errors != cur.errors ||
+                               last.cbInQue != cur.cbInQue ||
+                               last.cbOutQue != cur.cbOutQue ||
+                               last.fXoffHold != cur.fXoffHold ||
+                               last.fXoffSent != cur.fXoffSent ||
+                               last.fDtrControl != cur.fDtrControl ||
+                               last.fRtsControl != cur.fRtsControl ||
+                               last.fOutX != cur.fOutX ||
+                               last.fInX != cur.fInX;
+
+                if (changed) {
+                    char buf[256];
+                    unsigned long long silence_ms = (unsigned long long)(now - last_rx_time);
+                    int n = snprintf(
+                        buf,
+                        sizeof(buf),
+                        "[STATUS] silence_ms=%llu CTS=%d DSR=%d XOFF_HOLD=%d XOFF_SENT=%d IN_Q=%lu OUT_Q=%lu DTR=%u RTS=%u OUTX=%u INX=%u ERR=0x%lX",
+                        silence_ms,
+                        (cur.modemStatus & MS_CTS_ON) ? 1 : 0,
+                        (cur.modemStatus & MS_DSR_ON) ? 1 : 0,
+                        cur.fXoffHold ? 1 : 0,
+                        cur.fXoffSent ? 1 : 0,
+                        cur.cbInQue,
+                        cur.cbOutQue,
+                        (unsigned)cur.fDtrControl,
+                        (unsigned)cur.fRtsControl,
+                        (unsigned)cur.fOutX,
+                        (unsigned)cur.fInX,
+                        cur.errors);
+
+                    if (n > 0) {
+                        if (g_errorCallback) {
+                            g_errorCallback(g_userData, 0, buf);
+                        } else {
+                            ACE_DEBUG((LM_DEBUG, ACE_TEXT("%C\n"), buf));
+                        }
+                    }
+                }
+
+                last = cur;
+            }
             continue;
         }
         else { // bytes_read < 0
