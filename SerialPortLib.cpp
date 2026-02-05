@@ -48,8 +48,8 @@ static int set_serial_attributes_internal(ACE_HANDLE handle, unsigned long baudR
     dcbSerialParams.fOutxDsrFlow = FALSE;  // No DSR hardware flow control
     dcbSerialParams.fDtrControl = DTR_CONTROL_ENABLE;  // Raise DTR on open, keep high
 
-    dcbSerialParams.fOutX = TRUE;
-    dcbSerialParams.fInX = TRUE;
+    // dcbSerialParams.fOutX = TRUE;
+    // dcbSerialParams.fInX = TRUE;
     dcbSerialParams.fBinary = TRUE; // MUST be true for binary data
     dcbSerialParams.fAbortOnError = FALSE; // Don't abort reads/writes on error
 
